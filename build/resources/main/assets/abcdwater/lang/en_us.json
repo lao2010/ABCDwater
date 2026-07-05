@@ -1,0 +1,9 @@
+{
+  "itemGroup.abcdwater": "ABCDwater",
+  "abcdwater.configuration.title": "ABCDwater Config",
+  "abcdwater.configuration.section.abcdwater.common.toml": "ABCDwater Settings",
+  "abcdwater.configuration.fallThreshold": "Fall Threshold",
+  "abcdwater.configuration.fallThreshold.tooltip": "Fall distance in blocks that triggers auto water (default: 3.0)",
+  "abcdwater.configuration.cooldownMs": "Cooldown (ms)",
+  "abcdwater.configuration.cooldownMs.tooltip": "Minimum time between auto water activations in milliseconds (default: 300)"
+}

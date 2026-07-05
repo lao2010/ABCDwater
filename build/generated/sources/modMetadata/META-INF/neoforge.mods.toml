@@ -1,0 +1,32 @@
+license="MIT"
+
+[[mods]]
+modId="abcdwater"
+version="1.0.0"
+displayName="ABCDwater"
+description='''
+ABCDwater - Auto Water Bucket Clutch Mod
+
+Automatically places water when falling to prevent fall damage.
+Just keep a water bucket in your hotbar and it will save you automatically!
+
+Features:
+- Auto water placement when fall distance exceeds 3 blocks
+- Client-side only, works on any server
+- Cooldown to prevent wasted buckets
+'''
+
+[[dependencies.abcdwater]]
+    modId="neoforge"
+    type="required"
+    versionRange="[26.1.2.76,)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.abcdwater]]
+    modId="minecraft"
+    type="required"
+    # Match any 26.1.x version
+    versionRange="[26.1.2,26.2)"
+    ordering="NONE"
+    side="BOTH"
