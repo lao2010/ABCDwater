@@ -28,50 +28,33 @@ public class ABCDwaterMod {
 }
 
 class WaterClutchHandler {
-    private static final long COOLDOWN_MS = 600;
-    private long lastUseTime = 0;
+    private static final long CLUTCH_COOLDOWN_MS = 800;
+    private long lastClutchTime = 0;
 
-    // State for water recycling after landing
-    private BlockPos pendingRecyclePos = null;
-    private int recycleTicks = 0;
+    // Water recycle state
+    private BlockPos recycleTarget = null;
+    private int recycleAttempts = 0;
 
-    private boolean isSafeLiquid(BlockState state) {
+    private boolean isSolidGround(BlockState state) {
+        return !state.isAir() && !state.canBeReplaced();
+    }
+    private boolean isWaterBlock(BlockState state) {
+        var b = state.getBlock();
+        return b == Blocks.WATER || b == Blocks.BUBBLE_COLUMN;
+    }
+    private boolean isSafeLanding(BlockState state) {
         var b = state.getBlock();
         return b == Blocks.WATER || b == Blocks.BUBBLE_COLUMN
-            || b == Blocks.KELP || b == Blocks.KELP_PLANT
+            || b == Blocks.KELP || b == Blocks.KELP_PLANT || b == Blocks.LAVA
             || b == Blocks.SEAGRASS || b == Blocks.TALL_SEAGRASS;
     }
 
-    /** Try to pick up a water source with an empty bucket. Returns true if succeeded. */
-    private boolean tryRecycleWater(Minecraft mc, BlockPos waterPos) {
-        var p = mc.player;
-        if (p == null) return false;
-
-        BlockState state = mc.level.getBlockState(waterPos);
-        if (state.getBlock() != Blocks.WATER && state.getBlock() != Blocks.BUBBLE_COLUMN) {
-            return false; // water gone
-        }
-
-        Inventory inv = p.getInventory();
-        int bucketSlot = -1;
-        for (int i = 0; i < 9; i++) {
-            if (inv.getItem(i).is(Items.BUCKET)) {
-                bucketSlot = i;
-                break;
-            }
-        }
-        if (bucketSlot < 0) return false;
-
-        int prevSlot = inv.getSelectedSlot();
-        if (bucketSlot != prevSlot) inv.setSelectedSlot(bucketSlot);
-
-        Vec3 hitVec = Vec3.atBottomCenterOf(waterPos);
-        BlockHitResult hit = new BlockHitResult(hitVec, Direction.UP, waterPos, false);
-        mc.gameMode.useItemOn(p, InteractionHand.MAIN_HAND, hit);
-
-        if (bucketSlot != prevSlot) inv.setSelectedSlot(prevSlot);
-        System.out.println("[ABCDwater] Recycled water at " + waterPos);
-        return true;
+    /**
+     * Simulate one tick of entity motion to predict where the player will land.
+     * Minecraft physics: gravity = 0.08/tick², drag = 0.98 vertical, 0.91 horizontal.
+     */
+    private double predictNextMotionY(double currentMotionY) {
+        return (currentMotionY - 0.08) * 0.98;
     }
 
     @SubscribeEvent
@@ -82,87 +65,140 @@ class WaterClutchHandler {
         var p = mc.player;
         var level = mc.level;
 
-        // === RECYCLE PHASE ===
-        // After a water clutch, try to pick up the water when the player is on ground.
-        if (pendingRecyclePos != null) {
-            recycleTicks++;
-            // Check if the water we placed is still there
-            BlockState waterState = mc.level.getBlockState(pendingRecyclePos);
-            boolean waterExists = waterState.getBlock() == Blocks.WATER || waterState.getBlock() == Blocks.BUBBLE_COLUMN;
-            
-            // After landing, wait a few ticks then try to pick up
-            if (p.onGround() && recycleTicks > 3) {
-                if (!waterExists) {
-                    System.out.println("[ABCDwater] Recycle: water already gone at " + pendingRecyclePos);
-                    pendingRecyclePos = null;
-                    recycleTicks = 0;
-                } else if (tryRecycleWater(mc, pendingRecyclePos)) {
-                    System.out.println("[ABCDwater] Recycle: success! Water picked up.");
-                    pendingRecyclePos = null;
-                    recycleTicks = 0;
-                } else {
-                    System.out.println("[ABCDwater] Recycle: failed at " + pendingRecyclePos
-                        + " onGround=" + p.onGround() + " tick=" + recycleTicks);
+        // ========= RECYCLE: pick up water after landing =========
+        if (recycleTarget != null) {
+            boolean waterStillThere = isWaterBlock(level.getBlockState(recycleTarget));
+            if (!waterStillThere) {
+                recycleTarget = null;
+                recycleAttempts = 0;
+            } else if (p.onGround()) {
+                // Player is on ground and water is nearby — try to pick it up
+                Inventory inv = p.getInventory();
+                int bucketSlot = -1;
+                for (int i = 0; i < 9; i++) {
+                    if (inv.getItem(i).is(Items.BUCKET)) {
+                        bucketSlot = i;
+                        break;
+                    }
                 }
-            } else if (!p.onGround() && recycleTicks > 100) {
-                // Player never landed? Timeout
-                System.out.println("[ABCDwater] Recycle: timeout (never landed)");
-                pendingRecyclePos = null;
-                recycleTicks = 0;
+                if (bucketSlot >= 0) {
+                    // Debug: log block state at target
+                    BlockState targetState = mc.level.getBlockState(recycleTarget);
+                    boolean isWater = targetState.getBlock() == Blocks.WATER;
+
+                    int prev = inv.getSelectedSlot();
+                    if (bucketSlot != prev) inv.setSelectedSlot(bucketSlot);
+
+                    // Try useItemOn with the BLOCK CENTER as hit location
+                    Vec3 hitVec = Vec3.atCenterOf(recycleTarget);
+                    // Try different directions - UP means the water surface
+                    BlockHitResult bh = new BlockHitResult(hitVec, Direction.UP, recycleTarget, false);
+                    InteractionResult result = mc.gameMode.useItemOn(p, InteractionHand.MAIN_HAND, bh);
+
+                    if (!result.consumesAction()) {
+                        // Also try looking down (for when player is on ground next to water)
+                        float px = p.getXRot(), py = p.getYRot();
+                        p.setXRot(90.0f);
+                        result = mc.gameMode.useItem(p, InteractionHand.MAIN_HAND);
+                        p.setXRot(px); p.setYRot(py);
+                    }
+
+                    if (result.consumesAction()) {
+                        System.out.println("[ABCDwater] Water recycled! isWater=" + isWater);
+                    } else {
+                        Vec3 e = p.getEyePosition();
+                        Vec3 bc = Vec3.atCenterOf(recycleTarget);
+                        double dist = e.distanceTo(bc);
+                        System.out.println("[ABCDwater] Recycle " + recycleAttempts
+                            + " result=" + result
+                            + " isWater=" + isWater
+                            + " eye2center=" + String.format("%.2f", dist)
+                            + " held=" + inv.getSelectedSlot());
+                    }
+
+                    if (bucketSlot != prev) inv.setSelectedSlot(prev);
+                }
+
+                if (++recycleAttempts > 40) { // ~2 seconds of trying
+                    System.out.println("[ABCDwater] Recycle gave up after " + recycleAttempts + " attempts");
+                    recycleTarget = null;
+                    recycleAttempts = 0;
+                }
             }
+            // If !onGround, keep waiting — player hasn't landed yet
         }
 
-        // === CLUTCH PHASE ===
+        // ========= CLUTCH: predict fall damage and place water =========
+
+        // Skip irrelevant states
         if (p.onGround()) return;
         if (p.isCreative() || p.isSpectator()) return;
         if (p.getAbilities().flying) return;
         if (p.isFallFlying()) return;
         if (p.isInWater() || p.isInLava()) return;
+        if (p.fallDistance < 2.0f) return; // not enough fall to bother predicting yet
 
-        // ❌ Nether check: water evaporates instantly, so never clutch here
+        // Dimension check: water only works in select dimensions
         if (level.dimension() == Level.NETHER) return;
 
+        // Cooldown
         long now = System.currentTimeMillis();
-        if (now - lastUseTime < COOLDOWN_MS) return;
-        if (p.fallDistance < 3.5f) return;
+        if (now - lastClutchTime < CLUTCH_COOLDOWN_MS) return;
 
-        // Scan downward: find the first block the player will actually hit
-        // Water is NOT replaceable for our purposes — it breaks the fall.
-        // But 'canBeReplaced()' returns true for water, so we must check liquids first.
-        var cursor = p.blockPosition().mutable();
-        int blocksDown = 0;
-        boolean landingOnLiquid = false;
+        // — Predict next-tick landing and fall damage —
+        // Minecraft tick physics:
+        //   1. drag: motionY *= 0.98
+        //   2. gravity: motionY -= 0.08
+        //   3. move: position += motionY
+        //   4. collision check → onGround, fallDistance
+        //
+        // At ClientTickEvent.Post, motionY is post-gravity (step 2 above),
+        // and position is post-movement (step 3 above).
 
-        for (int i = 0; i < 16; i++) {
-            cursor.move(Direction.DOWN);
-            BlockState state = level.getBlockState(cursor);
-            if (state.isAir()) continue;
+        double mY = p.getDeltaMovement().y;
 
-            // First non-air block: check if it's liquid that can break the fall
-            if (isSafeLiquid(state)) {
-                blocksDown = i + 1;
-                landingOnLiquid = true;
-                System.out.println("[ABCDwater] Water below at " + cursor.getY() + " — no clutch needed");
-                break;
-            }
-            // Solid or replaceable non-liquid block (grass, snow, etc.)
-            if (!state.canBeReplaced()) {
-                blocksDown = i + 1;
-                landingOnLiquid = false;
-                break;
-            }
-            // Replaceable non-liquid — keep scanning (tall grass, etc.)
+        // Simulate next tick's physics:
+        // Next tick will apply gravity then drag, then move
+        double nextMY = (mY - 0.08) * 0.98;
+        double nextY = p.getY() + nextMY;
+        BlockPos nextFeet = BlockPos.containing(p.getX(), nextY, p.getZ());
+        BlockPos belowFeet = nextFeet.below();
+
+        // Will the player land next tick?
+        boolean willLand = isSolidGround(level.getBlockState(belowFeet));
+        if (!willLand && isSolidGround(level.getBlockState(nextFeet))) {
+            willLand = true;
+            belowFeet = nextFeet;
+        }
+        if (!willLand) return;
+
+        // Is the landing spot water/lava?
+        BlockState landingState = level.getBlockState(belowFeet);
+        if (isSafeLanding(landingState)) {
+            System.out.println("[ABCDwater] Landing on liquid, skip");
+            return;
         }
 
-        if (blocksDown == 0) return;
-        if (landingOnLiquid) return;
+        // Predicted fallDistance when landing:
+        // fallDistance accumulates each tick: fallDistance += max(0, -next_motionY)
+        double accumFall = p.fallDistance;
+        if (nextMY < 0) accumFall += -nextMY;
 
-        // Check if the ground block face is within reach (looking straight down)
+        // Fall damage when fallDistance > 3.0
+        if (accumFall <= 3.5) {
+            System.out.println("[ABCDwater] Next-land fallDist="
+                + String.format("%.2f", accumFall) + " < 3.5, safe");
+            return;
+        }
+
+        // Check distance: can we reach the ground face by looking down?
         double eyeY = p.getEyeY();
-        double faceY = cursor.getY() + 1.0;
+        double faceY = belowFeet.getY() + 1.0;
         double distToFace = eyeY - faceY;
-
-        if (distToFace > 4.4 || distToFace < 0.3) return;
+        if (distToFace > 4.4 || distToFace < 0.3) {
+            System.out.println("[ABCDwater] Can't reach: " + String.format("%.2f", distToFace));
+            return;
+        }
 
         // Find water bucket
         Inventory inv = p.getInventory();
@@ -178,22 +214,19 @@ class WaterClutchHandler {
         int prevSlot = inv.getSelectedSlot();
         if (waterSlot != prevSlot) inv.setSelectedSlot(waterSlot);
 
-        // Look down and right-click — server raytraces from eye → hits ground face → places water
+        // Method 1: look down + useItem (raytrace to block face)
         float prevXRot = p.getXRot();
         float prevYRot = p.getYRot();
         p.setXRot(90.0f);
-
-        // Method 1: right-click (look down) — simulates player MLG
-        var result = mc.gameMode.useItem(p, InteractionHand.MAIN_HAND);
+        InteractionResult result = mc.gameMode.useItem(p, InteractionHand.MAIN_HAND);
         boolean success = result.consumesAction();
 
         if (!success) {
-            // Method 2: if raytrace failed, try direct block interaction
-            // Only works if the ground block center is within 4.5 reach
-            double centerDist = p.getEyeY() - (cursor.getY() + 0.5);
+            // Method 2: fallback — direct block interaction
+            double centerDist = p.getEyeY() - (belowFeet.getY() + 0.5);
             if (centerDist <= 4.4) {
-                Vec3 hitVec = Vec3.atBottomCenterOf(cursor).add(0, 1, 0);
-                BlockHitResult bh = new BlockHitResult(hitVec, Direction.UP, cursor.immutable(), false);
+                Vec3 hitVec = Vec3.atBottomCenterOf(belowFeet).add(0, 1, 0);
+                BlockHitResult bh = new BlockHitResult(hitVec, Direction.UP, belowFeet, false);
                 result = mc.gameMode.useItemOn(p, InteractionHand.MAIN_HAND, bh);
                 success = result.consumesAction();
             }
@@ -201,18 +234,19 @@ class WaterClutchHandler {
 
         p.setXRot(prevXRot);
         p.setYRot(prevYRot);
-
         if (waterSlot != prevSlot) inv.setSelectedSlot(prevSlot);
 
         if (success) {
-            pendingRecyclePos = cursor.immutable().above();
-            System.out.println("[ABCDwater] Clutch OK! dist=" + String.format("%.2f", distToFace)
-                + " waterAt=" + pendingRecyclePos + " method=" + (result.consumesAction() ? "useItem" : "useItemOn"));
+            // Water placed — remember where for recycling (1 block above ground)
+            recycleTarget = belowFeet.above();
+            recycleAttempts = 0;
+            System.out.println("[ABCDwater] CLUTCH! predicted fall="
+                + String.format("%.2f", accumFall)
+                + " waterAt=" + recycleTarget);
         } else {
-            System.out.println("[ABCDwater] Clutch FAILED! dist=" + String.format("%.2f", distToFace)
-                + " result=" + result);
+            System.out.println("[ABCDwater] Clutch FAILED: " + result);
         }
-        recycleTicks = 0;
-        lastUseTime = now;
+
+        lastClutchTime = now;
     }
 }
