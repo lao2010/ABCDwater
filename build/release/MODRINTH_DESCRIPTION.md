@@ -1,26 +1,25 @@
-# ABCDwater
+# ABCDwater -- Auto Water Clutch
 
-**自动落地水 (Auto MLG Water Clutch)** — 纯客户端 NeoForge 模组，坠落时自动放水免伤。
+A client-side NeoForge mod that automatically places water when falling, saving you from fall damage.
 
-## 功能
+## Features
 
-- **自动 MLG** — 坠落 ≥3.5 格触发，预测地面位置自动放水
-- **双重放水** — 先用俯视右键，不成功则直接交互方块
-- **智能判断** — 下界不放水，下方是水/岩浆不浪费桶
-- **自动回收** — 落地后自动用空桶回收水源，桶可重复使用
-- **精确高度** — 3.5 格以上才触发，日常跳跃不干扰
-- **纯客户端** — 任何服务器都能用
+- Smart physics prediction -- simulates next tick with gravity
+- Dual placement -- look-down right-click first, useItemOn as fallback
+- Auto recycle -- picks up the water source after landing
+- Dimension aware -- disabled in the Nether
+- Client-side only -- works on any server
 
-## 用法
+## Usage
 
-1. 把 JAR 丢进 `.minecraft/mods/`
-2. 快捷栏放一个水桶
-3. 从高处跳下（≥4 格）
-4. 落地后自动回收水桶
+1. Place the JAR in .minecraft/mods/
+2. Put a water bucket in your hotbar
+3. Fall from >=4 blocks height
+4. Water is placed at the predicted landing position and recycled after landing
 
-## 技术细节
+## Technical Details
 
-- **模组加载器：** NeoForge 26.1.2
-- **Minecraft：** 26.1.2
-- **Java：** 25
-- **纯客户端**
+- Mod Loader: NeoForge 26.1.2
+- Minecraft: 26.1.2
+- Java: 25
+- Client-side only
